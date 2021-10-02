@@ -10,3 +10,4 @@ pyvenv.cfg
 *.csv
 *.pdf
 .ipynb_checkpoints
+*.pkl
