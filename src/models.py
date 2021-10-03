@@ -9,6 +9,8 @@ import pickle
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
 
+torch.manual_seed(42)
+
 
 class SampleDataset(Dataset):
 
@@ -55,7 +57,7 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
         tmp_out = np.zeros_like(outputs)
         outputs = torch.softmax(torch.FloatTensor(outputs), dim=1).numpy()
         tmp_out[np.arange(len(outputs)), outputs.argmax(axis=1)] = 1
-        metric_score.append(f1_score(tmp_out[:, 0], labels[:, 0]))
+        metric_score.append(f1_score(tmp_out.argmax(axis=1), labels.argmax(axis=1), average="macro"))
     print(ev_tr)
     print("loss", np.average(loss_score))
     print("score", np.average(metric_score))
@@ -80,8 +82,8 @@ class CNNClassifier(nn.Module):
         return out
 
 
-def main(data):
-    BATCH = 50
+def main_cnn(data):
+    BATCH = 100
     raw_dataset, corresponding_labels = data
     oe_style = OneHotEncoder()
     corresponding_labels = oe_style.fit_transform(corresponding_labels.reshape(-1, 1))
@@ -123,9 +125,3 @@ def main(data):
         train_scores.append(train_score)
         eval_scores.append(eval_score)
     return train_scores, eval_scores, train_losses, eval_losses
-
-
-with open("dataset.pkl", "rb") as lala:
-    data = pickle.load(lala)
-
-main(data)
