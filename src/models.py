@@ -5,6 +5,9 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import OneHotEncoder
+import pickle
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 class SampleDataset(Dataset):
@@ -41,8 +44,6 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
         # 2 - forward pass: compute predicted y by passing x to the model
         outputs = model(inputs)
         # 3 - compute loss
-        print(outputs)
-        print(labels)
         loss = loss_function(outputs, labels.float())
         loss.backward()
 
@@ -50,7 +51,11 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
         optimizer.step()
 
         loss_score.append(loss.detach().item())
-        metric_score.append(f1_score(outputs, labels))
+        outputs = outputs.detach().numpy()
+        tmp_out = np.zeros_like(outputs)
+        outputs = torch.softmax(torch.FloatTensor(outputs), dim=1).numpy()
+        tmp_out[np.arange(len(outputs)), outputs.argmax(axis=1)] = 1
+        metric_score.append(f1_score(tmp_out[:, 0], labels[:, 0]))
     print(ev_tr)
     print("loss", np.average(loss_score))
     print("score", np.average(metric_score))
@@ -59,30 +64,35 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
 
 class CNNClassifier(nn.Module):
 
-    def __init__(self, embeddings, kernel_dim=100, kernel_sizes=(3, 4, 5), output_size=2):
+    def __init__(self, kernel_dim=100, kernel_sizes=(3, 4, 5), output_size=2):
         super(CNNClassifier, self).__init__()
         # input
-        embedding_dim = embeddings.shape[1]
         #  end of inputs.
-        self.convs = nn.ModuleList([nn.Conv2d(1, kernel_dim, (K, 1)) for K in kernel_sizes])
+        self.convs = nn.ModuleList([nn.Conv1d(1, kernel_dim, (K, 1)) for K in kernel_sizes])
         self.fc = nn.Linear(len(kernel_sizes) * kernel_dim, output_size)
 
     def forward(self, x):
-        inputs = x.unsqueeze(0).unsqueeze(1)
+        inputs = x.unsqueeze(1).unsqueeze(-1)
         inputs = [torch.relu(conv(inputs)).squeeze(3) for conv in self.convs]  # [(N,Co,W), ...]*len(Ks)
-        inputs = [torch.max_pool2d(i, i.size(2)).squeeze(2) for i in inputs]  # [(N,Co), ...]*len(Ks)
+        inputs = [torch.max_pool1d(i, i.size(2)).squeeze(2) for i in inputs]  # [(N,Co), ...]*len(Ks)
         concated = torch.cat(inputs, 1)
-        print(concated.shape)
         out = self.fc(concated)
-        print(out.shape)
         return out
 
 
-def cnn_pipeline(X_train, X_test, y_train, y_test):
+def main(data):
     BATCH = 50
+    raw_dataset, corresponding_labels = data
     oe_style = OneHotEncoder()
-    y_train = torch.FloatTensor(oe_style.fit_transform(y_train.reshape(-1, 1)).getnnz())
-    y_test = torch.FloatTensor(oe_style.fit_transform(y_test.reshape(-1, 1)).getnnz())
+    corresponding_labels = oe_style.fit_transform(corresponding_labels.reshape(-1, 1))
+    corresponding_labels = torch.FloatTensor(corresponding_labels.toarray())
+    X_train, X_test, y_train, y_test = train_test_split(raw_dataset, corresponding_labels, test_size=0.2,
+                                                        random_state=42)  # same machine same seed.
+    vectorizer = TfidfVectorizer(analyzer='word')
+    X_train = vectorizer.fit_transform(X_train.iloc[:, 0])
+    X_test = vectorizer.transform(X_test.iloc[:, 0])
+    X_train = torch.FloatTensor(X_train.toarray())
+    X_test = torch.FloatTensor(X_test.toarray())
     train_dataset = SampleDataset(X_train, y_train)
     eval_dataset = SampleDataset(X_test, y_test)
     train_loader = DataLoader(train_dataset, batch_size=BATCH, shuffle=True, num_workers=0)
@@ -91,8 +101,7 @@ def cnn_pipeline(X_train, X_test, y_train, y_test):
     criterion = torch.nn.BCEWithLogitsLoss()
     EPOCHS = 10
     lr = 0.001
-
-    model = CNNClassifier(X_train)
+    model = CNNClassifier()
     parameters = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.Adam(parameters, lr=lr)
 
@@ -113,15 +122,10 @@ def cnn_pipeline(X_train, X_test, y_train, y_test):
 
         train_scores.append(train_score)
         eval_scores.append(eval_score)
-
     return train_scores, eval_scores, train_losses, eval_losses
 
 
-import pickle
-
-with open("lala.pkl", "rb") as lala:
+with open("dataset.pkl", "rb") as lala:
     data = pickle.load(lala)
 
-
-(X_train, X_test, y_train, y_test) = data
-cnn_pipeline(X_train, X_test, y_train, y_test)
+main(data)
