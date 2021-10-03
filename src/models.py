@@ -5,9 +5,10 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score
 from sklearn.preprocessing import OneHotEncoder
-import pickle
+from scipy.sparse import csr_matrix
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.decomposition import TruncatedSVD
 
 torch.manual_seed(42)
 
@@ -31,8 +32,10 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
     # switch to train mode -> enable regularization layers, such as Dropout
     if ev_tr == "train":
         model.train()
-    else:
+    elif ev_tr == "eval":
         model.eval()
+    else:
+        raise ValueError("NOT valid mode")
     loss_score = []
     metric_score = []
 
@@ -47,10 +50,11 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
         outputs = model(inputs)
         # 3 - compute loss
         loss = loss_function(outputs, labels.float())
-        loss.backward()
+        if ev_tr == "train":
+            loss.backward()
 
-        # 5 - update weights
-        optimizer.step()
+            # 5 - update weights
+            optimizer.step()
 
         loss_score.append(loss.detach().item())
         outputs = outputs.detach().numpy()
@@ -58,18 +62,14 @@ def train_epoch(_epoch, dataloader, model, loss_function, optimizer, ev_tr):
         outputs = torch.softmax(torch.FloatTensor(outputs), dim=1).numpy()
         tmp_out[np.arange(len(outputs)), outputs.argmax(axis=1)] = 1
         metric_score.append(f1_score(tmp_out.argmax(axis=1), labels.argmax(axis=1), average="macro"))
-    print(ev_tr)
-    print("loss", np.average(loss_score))
-    print("score", np.average(metric_score))
+    # print("epoch {}: {} loss {} score {}".format(_epoch, ev_tr, np.average(loss_score), np.average(metric_score)))
     return np.average(loss_score), np.average(metric_score)
 
 
 class CNNClassifier(nn.Module):
 
-    def __init__(self, kernel_dim=100, kernel_sizes=(3, 4, 5), output_size=2):
+    def __init__(self, kernel_dim=100, kernel_sizes=(30, 40, 50), output_size=2):
         super(CNNClassifier, self).__init__()
-        # input
-        #  end of inputs.
         self.convs = nn.ModuleList([nn.Conv1d(1, kernel_dim, (K, 1)) for K in kernel_sizes])
         self.fc = nn.Linear(len(kernel_sizes) * kernel_dim, output_size)
 
@@ -83,7 +83,7 @@ class CNNClassifier(nn.Module):
 
 
 def main_cnn(data):
-    BATCH = 100
+    BATCH = 2000
     raw_dataset, corresponding_labels = data
     oe_style = OneHotEncoder()
     corresponding_labels = oe_style.fit_transform(corresponding_labels.reshape(-1, 1))
@@ -91,17 +91,27 @@ def main_cnn(data):
     X_train, X_test, y_train, y_test = train_test_split(raw_dataset, corresponding_labels, test_size=0.2,
                                                         random_state=42)  # same machine same seed.
     vectorizer = TfidfVectorizer(analyzer='word')
+
     X_train = vectorizer.fit_transform(X_train.iloc[:, 0])
     X_test = vectorizer.transform(X_test.iloc[:, 0])
-    X_train = torch.FloatTensor(X_train.toarray())
-    X_test = torch.FloatTensor(X_test.toarray())
+
+
+    X_train = csr_matrix(X_train)
+    svd = TruncatedSVD(n_components=300, n_iter=7, random_state=42)
+    X_train = svd.fit_transform(X_train)
+    X_test = csr_matrix(X_test)
+    X_test = svd.transform(X_test)
+
+    X_train = torch.FloatTensor(X_train)
+    X_test = torch.FloatTensor(X_test)
+
     train_dataset = SampleDataset(X_train, y_train)
     eval_dataset = SampleDataset(X_test, y_test)
     train_loader = DataLoader(train_dataset, batch_size=BATCH, shuffle=True, num_workers=0)
     eval_loader = DataLoader(eval_dataset, batch_size=BATCH, shuffle=False, num_workers=0)
 
     criterion = torch.nn.BCEWithLogitsLoss()
-    EPOCHS = 10
+    EPOCHS = 200
     lr = 0.001
     model = CNNClassifier()
     parameters = filter(lambda p: p.requires_grad, model.parameters())
@@ -114,14 +124,15 @@ def main_cnn(data):
     eval_scores = []
 
     for i in range(EPOCHS):
-        print("epoch: %s" % i)
         train_loss, train_score = train_epoch(i, train_loader, model, criterion, optimizer, "train")
-        print("\n")
         eval_loss, eval_score = train_epoch(i, eval_loader, model, criterion, optimizer, "eval")
 
         train_losses.append(train_loss)
-        eval_losses.append(eval_loss)
-
         train_scores.append(train_score)
+
+        eval_losses.append(eval_loss)
         eval_scores.append(eval_score)
+
+    print("best evaluation scores are on {} {}".format(max(eval_scores), np.argmax(eval_scores)))
+    print("best model loss score is {} on {} epoch".format(min(eval_losses), np.argmin(eval_losses)))
     return train_scores, eval_scores, train_losses, eval_losses
